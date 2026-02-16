@@ -1,0 +1,18 @@
+{
+  "name": "test-workflow",
+  "stages": [
+    {
+      "name": "first-stage",
+      "task": "Create a simple text file called TEST-OUTPUT.txt in the current directory with the content: 'Test workflow executed successfully at ' followed by the current date and time.",
+      "dependencies": []
+    },
+    {
+      "name": "second-stage",
+      "task": "Read the TEST-OUTPUT.txt file created in the first stage. Append a new line with the text: 'Second stage completed successfully.' Save the updated content back to the same file.",
+      "dependencies": ["first-stage"]
+    }
+  ],
+  "stopOnError": true,
+  "retryOnFailure": 0,
+  "stageTimeoutMinutes": 5
+}

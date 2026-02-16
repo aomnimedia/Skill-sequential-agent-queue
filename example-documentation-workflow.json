@@ -1,0 +1,40 @@
+{
+  "name": "documentation-workflow-example",
+  "description": "Example workflow for generating project documentation",
+  "stages": [
+    {
+      "name": "prd",
+      "task": "Create a Product Requirements Document (PRD) for a new analytics dashboard feature. Include:\n- Executive Summary\n- User Stories\n- Functional Requirements\n- Non-functional Requirements\n- Success Metrics\n\nOutput as PRD.md",
+      "dependencies": []
+    },
+    {
+      "name": "architecture",
+      "task": "Create an Architecture Design Document based on the PRD. Reference {prd} for requirements.\n\nInclude:\n- System Architecture Diagram\n- Component Overview\n- Data Model\n- Technology Stack\n- Security Considerations\n- Scalability Plan\n\nOutput as ARCHITECTURE.md",
+      "dependencies": ["prd"],
+      "contextFrom": "outputs => ({ prd: outputs.prd.file })"
+    },
+    {
+      "name": "api-design",
+      "task": "Design REST API endpoints based on architecture. Reference {architecture}.\n\nFor each endpoint, include:\n- HTTP Method and Path\n- Request/Response Schema\n- Authentication Requirements\n- Error Codes\n- Rate Limits\n\nOutput as API-DESIGN.md",
+      "dependencies": ["architecture"],
+      "contextFrom": "outputs => ({ architecture: outputs.architecture.file })"
+    },
+    {
+      "name": "ui-design",
+      "task": "Design UI components and flows based on PRD. Reference {prd} for user stories.\n\nInclude:\n- Screen Wireframes (text description)\n- Component Hierarchy\n- User Interactions\n- State Management\n\nOutput as UI-DESIGN.md",
+      "dependencies": ["prd"],
+      "contextFrom": "outputs => ({ prd: outputs.prd.file })"
+    },
+    {
+      "name": "testing",
+      "task": "Create comprehensive testing strategy. Reference {apiDesign} and {uiDesign}.\n\nInclude:\n- Unit Test Plan\n- Integration Test Plan\n- E2E Test Scenarios\n- Performance Testing\n- Security Testing Checklist\n\nOutput as TESTING.md",
+      "dependencies": ["api-design", "ui-design"],
+      "contextFrom": "outputs => ({\n  apiDesign: outputs['api-design'].file,\n  uiDesign: outputs['ui-design'].file\n})"
+    }
+  ],
+  "stopOnError": true,
+  "agentSessionKey": "documentation-team",
+  "retryOnFailure": 1,
+  "stageTimeoutMinutes": 15,
+  "workingDirectory": "/tmp/workflow-examples"
+}

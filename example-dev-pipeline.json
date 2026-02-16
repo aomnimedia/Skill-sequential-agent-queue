@@ -1,0 +1,48 @@
+{
+  "name": "development-pipeline-example",
+  "description": "Example workflow for a full software development pipeline",
+  "stages": [
+    {
+      "name": "specs",
+      "task": "Write a feature specification for a user authentication system.\n\nInclude:\n- Feature Overview\n- User Stories\n- Edge Cases\n- Technical Considerations\n- Acceptance Criteria\n\nOutput as SPECS.md",
+      "dependencies": []
+    },
+    {
+      "name": "tech-design",
+      "task": "Create technical design for authentication. Reference {specs}.\n\nInclude:\n- Class Diagrams\n- Database Schema (users, sessions, tokens)\n- Authentication Flow Diagram\n- Security Architecture\n- Implementation Notes\n\nOutput as TECH-DESIGN.md",
+      "dependencies": ["specs"],
+      "contextFrom": "outputs => ({ specs: outputs.specs.file })"
+    },
+    {
+      "name": "implementation",
+      "task": "Implement the authentication system following TECH-DESIGN.md.\n\nRequirements:\n- Clean, well-documented code\n- Unit tests for all functions\n- Follow security best practices\n- Handle edge cases\n\nProvide implementation summary and key file locations.",
+      "dependencies": ["tech-design"],
+      "contextFrom": "outputs => ({ design: outputs['tech-design'].file })"
+    },
+    {
+      "name": "unit-tests",
+      "task": "Write and run unit tests for the authentication implementation.\n\nTarget:\n- >90% code coverage\n- Test all authentication flows\n- Test error conditions\n- Test edge cases\n\nOutput test coverage report and any failures.",
+      "dependencies": ["implementation"]
+    },
+    {
+      "name": "integration-tests",
+      "task": "Write and run integration tests.\n\nFocus on:\n- Full authentication flow\n- Session management\n- Token refresh\n- Logout flow\n\nOutput integration test results.",
+      "dependencies": ["unit-tests"]
+    },
+    {
+      "name": "code-review",
+      "task": "Perform code review of authentication implementation and tests.\n\nCheck for:\n- Code quality issues\n- Security vulnerabilities\n- Performance concerns\n- Documentation gaps\n\nOutput CODE-REVIEW.md with findings and recommendations.",
+      "dependencies": ["integration-tests"]
+    },
+    {
+      "name": "documentation",
+      "task": "Update documentation for the authentication system.\n\nInclude:\n- API documentation\n- Integration guide\n- Security checklist\n- Migration guide if needed\n\nDocumentation can reference existing docs.",
+      "dependencies": ["code-review"]
+    }
+  ],
+  "stopOnError": true,
+  "agentSessionKey": "dev-team",
+  "retryOnFailure": 2,
+  "stageTimeoutMinutes": 20,
+  "workingDirectory": "/tmp/workflow-examples"
+}

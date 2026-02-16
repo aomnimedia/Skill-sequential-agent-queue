@@ -1,0 +1,30 @@
+{
+  "name": "sequential-agent-queue",
+  "version": "1.0.0",
+  "description": "Automated sequential execution of multi-stage agent workflows with dependency passing and progress tracking",
+  "main": "queue.js",
+  "scripts": {
+    "validate": "node queue.js validate",
+    "example": "node queue.js example",
+    "test": "node queue.js validate example-documentation-workflow.json && node queue.js validate example-dev-pipeline.json"
+  },
+  "keywords": [
+    "workflow",
+    "pipeline",
+    "agent",
+    "sequential",
+    "dependencies",
+    "automation",
+    "openclaw"
+  ],
+  "author": "Vincent [Agent: skill-creator]",
+  "license": "MIT",
+  "files": [
+    "SKILL.md",
+    "README.md",
+    "queue.js",
+    "example-documentation-workflow.json",
+    "example-dev-pipeline.json",
+    "package.json"
+  ]
+}

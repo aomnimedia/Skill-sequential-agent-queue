@@ -1,0 +1,68 @@
+=== Sequential Agent Queue Enhancement Tests ===
+
+TEST 1: Validate valid completionEvidence
+[validation] Validating completion evidence for stage: test-stage-1
+[validation] Evidence file exists: /home/optimistprime/.openclaw/workspace/skills/sequential-agent-queue/test-evidence.txt (size: 134 bytes)
+✅ TEST 1 PASSED: Valid evidence accepted
+
+TEST 2: Validate missing completionEvidence
+[validation] Validating completion evidence for stage: test-stage-2
+✅ TEST 2 PASSED: Missing evidence rejected
+
+TEST 3: Validate evidence with fake markers
+[validation] Validating completion evidence for stage: test-stage-3
+[validation] Evidence file exists: /home/optimistprime/.openclaw/workspace/skills/sequential-agent-queue/fake-evidence.txt (size: 34 bytes)
+[validation-failed] Stage test-stage-3 evidence validation failed:
+  - Evidence file created too recently (0.66015625ms), appears fake: /home/optimistprime/.openclaw/workspace/skills/sequential-agent-queue/fake-evidence.txt
+  - Evidence contains fake verification marker: "/i checked/i" in /home/optimistprime/.openclaw/workspace/skills/sequential-agent-queue/fake-evidence.txt
+  - Evidence file lacks actual test output: /home/optimistprime/.openclaw/workspace/skills/sequential-agent-queue/fake-evidence.txt
+✅ TEST 3 PASSED: Fake markers detected
+
+TEST 4: Validate evidence with empty file
+[validation] Validating completion evidence for stage: test-stage-4
+[validation] Evidence file exists: /home/optimistprime/.openclaw/workspace/skills/sequential-agent-queue/empty-evidence.txt (size: 0 bytes)
+[validation-failed] Stage test-stage-4 evidence validation failed:
+  - Evidence file created too recently (-0.33984375ms), appears fake: /home/optimistprime/.openclaw/workspace/skills/sequential-agent-queue/empty-evidence.txt
+  - Evidence file is empty: /home/optimistprime/.openclaw/workspace/skills/sequential-agent-queue/empty-evidence.txt
+  - Evidence file lacks actual test output: /home/optimistprime/.openclaw/workspace/skills/sequential-agent-queue/empty-evidence.txt
+✅ TEST 4 PASSED: Empty file detected
+
+TEST 5: Git check handles git operations
+[git-check] Checking for changes after stage: test-stage-5
+[git-check] Changes detected:
+ ? antfarm
+ M antfarm-workflows-governance/progress-21b4cf19-ea72-4bcc-843f-1b46d61a5e23.txt
+A  antfarm-workflows-governance/test/test-automation-framework.js
+ ? bounty-rustchain-ci-pipeline
+ ? bug-bounty-scans/express-simple
+ ? bug-bounty-scans/flask-web.git
+ ? bug-queue-system
+ M scripts/incremental-dialog-state.json
+ M skills/sequential-agent-queue/SKILL.md
+M  skills/sequential-agent-queue/test-enhancement.js
+ ? test-antfarm-repo
+ ? testing/franklin-prioritization
+ ? testing/schema-alignment-verification
+?? antfarm-workflows-governance/checkpoint-us003.js
+?? skills/sequential-agent-queue/test-fix-evidence.txt
+
+[git-check] Documentation changes detected, requiring commit
+[git-check] Changes committed successfully
+✅ TEST 5 PASSED: Git check committed changes correctly (16 files)
+
+TEST 6: Abandoned stage detection
+[abandon-check] Checking if stage test-stage-6 was abandoned
+✅ TEST 6 PASSED: Non-existent session not flagged as abandoned
+
+=== Test Summary ===
+Total Tests: 6
+Passed: 6 ✅
+Failed: 0 ❌
+
+All tests passed! ✅
+
+VERIFICATION REQUIRED:
+- All validation functions working correctly
+- Evidence validation rejects invalid evidence
+- Git check handles no-changes case
+- Abandoned stage detection works safely
