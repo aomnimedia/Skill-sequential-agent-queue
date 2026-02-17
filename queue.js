@@ -1344,6 +1344,9 @@ module.exports = {
 if (require.main === module) {
     const args = process.argv.slice(2);
 
+    // Wrap command-line interface in async IIFE to await persistence calls
+    (async () => {
+
     if (args.length > 0 && args[0] === 'validate') {
         // Validate workflow from file
         if (args.length < 2) {
@@ -1618,4 +1621,5 @@ Phase 1 Enhancements (Production Readiness):
   ✅ Workflow persistence and resumption
         `);
     }
+    })();  // Close async IIFE
 }
