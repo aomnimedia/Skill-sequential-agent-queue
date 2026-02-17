@@ -824,12 +824,17 @@ async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
 
     const startTime = Date.now();
     const executionOrder = topologicalSort(workflow.stages);
-    const stageOutputs = {};
     const stopOnError = workflow.stopOnError !== undefined ? workflow.stopOnError : true;
     const workingDir = workflow.workingDirectory || process.cwd();
 
+    // Iteration configuration
+    const iterationEnabled = workflow.iterationEnabled !== false; // Default: enabled
+    const maxIterations = workflow.maxIterations || 3;
+    const currentIteration = context.iteration || 0;
+
     console.log(`[workflow-started] Starting workflow: ${workflow.name}`);
     console.log(`[workflow-order] Execution order: ${executionOrder.join(' → ')}`);
+    console.log(`[iteration-config] Iteration: ${currentIteration}/${maxIterations}, Enabled: ${iterationEnabled}`);
 
     // Checkpoint: workflow started
     if (checkpoint) {
@@ -840,12 +845,15 @@ async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
             details: {
                 workflow: workflow.name,
                 stageCount: workflow.stages.length,
-                executionOrder
+                executionOrder,
+                iteration: currentIteration,
+                maxIterations
             }
         });
     }
 
     let failedStage = null;
+    const stageOutputs = {};
 
     // Execute stages in order
     for (let i = 0; i < executionOrder.length; i++) {
@@ -909,12 +917,71 @@ async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
     const totalDuration = endTime - startTime;
     const success = failedStage === null && !Object.values(stageOutputs).some(s => s.status === 'failed');
 
+    // Check for iteration restart conditions
+    let iterationStatus = null;
+    let shouldRestart = false;
+
+    if (success && iterationEnabled) {
+        const lastStage = executionOrder[executionOrder.length - 1];
+        const lastStageOutput = stageOutputs[lastStage];
+
+        // Check if should iterate (critical gaps detected)
+        if (currentIteration < maxIterations) {
+            const gapCheck = checkCriticalGaps(lastStageOutput);
+
+            if (gapCheck.hasCriticalGaps) {
+                shouldRestart = true;
+                iterationStatus = 'restart-detected';
+
+                console.log(`[iteration-${currentIteration}] Critical gaps detected (${gapCheck.count} gaps)`);
+                console.log(`[iteration-${currentIteration}] Restarting workflow from stage 0...`);
+
+                // Checkpoint: iteration restart
+                if (checkpoint) {
+                    await checkpoint({
+                        label: 'iteration_restart',
+                        description: `Workflow "${workflow.name}" iteration ${currentIteration + 1} starting`,
+                        status: 'retrying',
+                        details: {
+                            workflow: workflow.name,
+                            currentIteration,
+                            gapsDetected: gapCheck.count,
+                            reason: 'Critical gaps requires workflow iteration'
+                        }
+                    });
+                }
+
+                // Restart workflow with incremented iteration counter
+                const newContext = {
+                    ...context,
+                    iteration: currentIteration + 1,
+                    previousIterations: (context.previousIterations || []).concat({
+                        iteration: currentIteration,
+                        stageOutputs: { ...stageOutputs },
+                        gaps: gapCheck.gaps || null
+                    })
+                };
+
+                console.log(`[iteration-${currentIteration}] Restarting with iteration ${newContext.iteration}`);
+                return await executeWorkflow(workflow, newContext, agentSpawner);
+            } else {
+                iterationStatus = 'no-gaps';
+                console.log(`[iteration-${currentIteration}] No critical gaps, workflow complete`);
+            }
+        } else {
+            iterationStatus = 'reached-max';
+            console.log(`[iteration-${currentIteration}] Max iterations (${maxIterations}) reached`);
+        }
+    } else {
+        iterationStatus = 'not-enabled';
+    }
+
     // Checkpoint: workflow complete or failed
     if (checkpoint) {
         await checkpoint({
             label: success ? 'workflow_complete' : 'workflow_failed',
-            description: success 
-                ? `Workflow "${workflow.name}" completed successfully` 
+            description: success
+                ? `Workflow "${workflow.name}" completed successfully`
                 : `Workflow "${workflow.name}" failed at stage "${failedStage}"`,
             status: success ? 'complete' : 'error',
             details: {
@@ -923,12 +990,15 @@ async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
                 failedStage,
                 totalDuration,
                 stagesCompleted: Object.values(stageOutputs).filter(s => s.status === 'complete').length,
-                stagesFailed: Object.values(stageOutputs).filter(s => s.status === 'failed').length
+                stagesFailed: Object.values(stageOutputs).filter(s => s.status === 'failed').length,
+                iterationStatus,
+                iteration: currentIteration
             }
         });
     }
 
     console.log(`[${success ? 'workflow-complete' : 'workflow-failed'}] Workflow: ${workflow.name} in ${(totalDuration / 1000).toFixed(1)}s`);
+    console.log(`[iteration-result] Status: ${iterationStatus}, Iteration: ${currentIteration}/${maxIterations}`);
 
     return {
         success,
@@ -936,8 +1006,82 @@ async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
         stages: stageOutputs,
         totalDuration,
         failedStage,
-        executionOrder
+        executionOrder,
+        iteration: {
+            current: currentIteration,
+            max: maxIterations,
+            enabled: iterationEnabled,
+            status: iterationStatus,
+            previousIterations: context.previousIterations || []
+        }
     };
+}
+
+/**
+ * Check if critical gaps exist in GAP-ANALYSIS stage output
+ * Parses stage output for gap priority and status
+ * Returns true if critical gaps detected
+ *
+ * Critical gap criteria:
+ * - Priority: HIGH criticality
+ * - Status: Not resolved/deferred/mitigated
+ */
+function checkCriticalGaps(stageOutput) {
+    if (!stageOutput || !stageOutput.transcript || !stageOutput.evidence) {
+        console.log('[iteration-check] No transcript/evidence available for gap analysis');
+        return false;
+    }
+
+    try {
+        // Check evidence JSON if available
+        if (stageOutput.evidence.filePath) {
+            const evidenceContent = require('fs').readFileSync(stageOutput.evidence.filePath, 'utf-8');
+            const evidence = JSON.parse(evidenceContent);
+
+            // Look for gaps with HIGH priority and unresolved status
+            if (evidence.gaps && Array.isArray(evidence.gaps)) {
+                const criticalGaps = evidence.gaps.filter(gap =>
+                    gap.priority === 'HIGH' &&
+                    gap.status &&
+                    !['resolved', 'deferred', 'mitigated', 'accepted-risk'].includes(gap.status.toLowerCase())
+                );
+
+                const criticalCount = criticalGaps.length;
+                console.log(`[iteration-check] Found ${criticalCount} critical gaps (HIGH priority, unresolved)`);
+
+                if (criticalCount > 0) {
+                    return {
+                        hasCriticalGaps: true,
+                        count: criticalCount,
+                        gaps: criticalGaps
+                    };
+                }
+            }
+        }
+
+        // Fallback: Parse transcript for gap mentions
+        const transcript = typeof stageOutput.transcript === 'string'
+            ? stageOutput.transcript
+            : JSON.stringify(stageOutput.transcript);
+
+        const gapMatches = transcript.match(/gap[^\n]+?high|high[^\n]+?gap|critical[^\n]+?gap|priority:\s*high/gi);
+
+        if (gapMatches && gapMatches.length > 2) {
+            console.log(`[iteration-check] Found ${gapMatches.length} high-priority gap mentions in transcript`);
+            return {
+                hasCriticalGaps: true,
+                count: gapMatches.length,
+                fromTranscript: true
+            };
+        }
+
+        console.log('[iteration-check] No critical gaps detected');
+        return { hasCriticalGaps: false };
+
+    } catch (error) {
+        console.warn(`[iteration-check] Error checking gaps: ${error.message}`);
+        return { hasCriticalGaps: false };
+    }
 }
 
 /**
