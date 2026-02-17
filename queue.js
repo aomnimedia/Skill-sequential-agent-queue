@@ -25,6 +25,20 @@ try {
     console.warn('⚠️  Checkpoint library not available, checkpoints disabled');
 }
 
+// Try to load enhancement modules
+let errorHandler = null;
+let resourceManager = null;
+let persistence = null;
+
+try {
+    errorHandler = require('./error-handler.js');
+    resourceManager = require('./resource-manager.js');
+    persistence = require('./persistence.js');
+    console.log('✅ Enhancement modules loaded (error-handler, resource-manager, persistence)');
+} catch (error) {
+    console.warn('⚠️  Enhancement modules not fully available:', error.message);
+}
+
 /**
  * Topological sort of dependency graph
  * Returns stages in execution order
@@ -770,6 +784,20 @@ async function executeStage(stage, workflow, stageOutputs, context, agentSpawner
             lastError = error;
             console.error(`[stage-failed] Stage: ${stageName} failed (attempt ${attempt}): ${error.message}`);
 
+            // Enhanced error handling (Phase 1 Enhancement)
+            let errorHandlingResult = null;
+            if (errorHandler) {
+                errorHandlingResult = await errorHandler.handleWorkflowError(error, {
+                    workflowName: workflow.name,
+                    stageName: stageName,
+                    attempt: attempt,
+                    maxRetries: maxRetries,
+                    currentTimeout: stageTimeoutMinutes * 60,
+                    stackTrace: error.stack,
+                    sessionId: result?.sessionId
+                });
+            }
+
             // Checkpoint: stage failed
             if (checkpoint) {
                 await checkpoint({
@@ -782,17 +810,44 @@ async function executeStage(stage, workflow, stageOutputs, context, agentSpawner
                         error: error.message,
                         stack: error.stack,
                         attempt,
-                        sessionId: result?.sessionId
+                        sessionId: result?.sessionId,
+                        enhancedHandling: !!errorHandlingResult
                     }
                 });
             }
 
-            // If not last attempt, retry after delay
-            if (attempt <= maxRetries) {
-                const delaySeconds = 5 * attempt;
-                console.log(`[stage-retry] Retrying stage: ${stageName} in ${delaySeconds}s...`);
-                await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
+            // Check if retry or halt (enhanced decision)
+            const shouldRetry = errorHandlingResult
+                ? errorHandlingResult.shouldRetry
+                : (attempt <= maxRetries);
+
+            const haltReason = errorHandlingResult?.haltReason || null;
+
+            // If halt, break out of retry loop
+            if (!shouldRetry) {
+                console.error(`[stage-halted] Stage: ${stageName} halted after attempt ${attempt}`);
+                if (haltReason) {
+                    console.error(`[stage-halted] Reason: ${haltReason}`);
+                }
+                if (errorHandlingResult?.suggestion) {
+                    console.error(`[stage-halted] Suggestion: ${errorHandlingResult.suggestion}`);
+                }
+                break;
             }
+
+            // If not last attempt, retry with delay (using enhanced backoff)
+            const delaySeconds = (errorHandlingResult?.recoveryResult?.backoff)
+                ? Math.ceil(errorHandlingResult.recoveryResult.backoff / 1000)  // Convert backoff from ms to seconds
+                : (5 * attempt);
+
+            console.log(`[stage-retry] Retrying stage: ${stageName} in ${delaySeconds}s...`);
+
+            // Enhanced recovery: apply recovery action if available
+            if (errorHandlingResult?.recoveryAttempted && errorHandlingResult?.recoveryResult) {
+                console.log(`[recovery-active] Using recovery result:`, errorHandlingResult.recoveryResult);
+            }
+
+            await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
         }
     }
 
@@ -811,6 +866,10 @@ async function executeStage(stage, workflow, stageOutputs, context, agentSpawner
 
 /**
  * Execute complete workflow
+ * Enhanced with:
+ * - Phase 1: Workflow persistence (pause/resume)
+ * - Phase 1: Resource management (cleanup)
+ * - Phase 1: Enhanced error recovery
  */
 async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
     // Determine which spawner to use
@@ -832,7 +891,67 @@ async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
     const maxIterations = workflow.maxIterations || 3;
     const currentIteration = context.iteration || 0;
 
-    console.log(`[workflow-started] Starting workflow: ${workflow.name}`);
+    // Workflow state for persistence (Phase 1 Enhancement)
+    let workflowState = null;
+    let isResume = false;
+
+    // Check if this is a resumption or new workflow
+    if (persistence && context.workflowId) {
+        console.log(`[workflow-resume] Resuming workflow: ${context.workflowId}`);
+        try {
+            const resumeData = await persistence.resumeWorkflow(context.workflowId, workflow);
+            workflowState = resumeData.state;
+            context = { ...context, ...resumeData.context };
+            isResume = true;
+
+            console.log(`[workflow-resume] Resuming from iteration: ${workflowState.iteration}`);
+            console.log(`[workflow-resume] skipping ${resumeData.stageOutputs ? Object.keys(resumeData.stageOutputs).length : 0} completed stages`);
+        } catch (error) {
+            console.error(`[workflow-resume-failed] Could not resume workflow: ${error.message}`);
+            if (context.requireResume !== false) {
+                throw error;  // Require resume failed
+            }
+        }
+    }
+
+    // Initialize new workflow state if not resuming
+    if (!workflowState && persistence) {
+        try {
+            workflowState = new persistence.WorkflowState({
+                workflowName: workflow.name,
+                status: 'running',
+                iteration: currentIteration,
+                maxIterations: maxIterations,
+                executionOrder: executionOrder,
+                context: context
+            });
+
+            await persistence.saveWorkflowState(workflowState);
+            console.log(`[persistence] New workflow initialized: ${workflowState.workflowId}`);
+        } catch (error) {
+            console.warn(`[persistence-warn] Could not initialize workflow state: ${error.message}`);
+        }
+    }
+
+    // Pre-workflow cleanup and resource validation (Phase 1 Enhancement)
+    if (resourceManager) {
+        const cleanupResult = await resourceManager.preWorkflowCleanup(workflow, {
+            cleanupOldOutputs: context.cleanupOldOutputs !== false,
+            retentionDays: context.retentionDays || 30
+        });
+
+        if (cleanupResult.errors.length > 0) {
+            console.error(`[cleanup-error] Pre-workflow cleanup failed:`, cleanupResult.errors);
+            throw new Error(`Pre-workflow cleanup failed: ${cleanupResult.errors.join(', ')}`);
+        }
+
+        // Check resource report
+        const resourceReport = resourceManager.getResourceReport();
+        console.log(`[resource-report] Memory: ${resourceReport.memory.heapUsed} (${resourceReport.memory.percentUsed}%)`);
+        console.log(`[resource-report] Uptime: ${resourceReport.duration.uptimeFormatted}`);
+    }
+
+    console.log(`[workflow-started] Starting workflow: ${workflow.name}${isResume ? ' (resume)' : ''}`);
     console.log(`[workflow-order] Execution order: ${executionOrder.join(' → ')}`);
     console.log(`[iteration-config] Iteration: ${currentIteration}/${maxIterations}, Enabled: ${iterationEnabled}`);
 
@@ -840,14 +959,16 @@ async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
     if (checkpoint) {
         await checkpoint({
             label: 'workflow_started',
-            description: `Workflow "${workflow.name}" started`,
+            description: `Workflow "${workflow.name}" started${isResume ? ' (resumed)' : ''}`,
             status: 'active',
             details: {
                 workflow: workflow.name,
+                workflowId: workflowState?.workflowId || null,
                 stageCount: workflow.stages.length,
                 executionOrder,
                 iteration: currentIteration,
-                maxIterations
+                maxIterations,
+                isResume
             }
         });
     }
@@ -861,14 +982,35 @@ async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
         const stageIndex = workflow.stages.findIndex(s => s.name === stageName);
         const stage = workflow.stages[stageIndex];
 
+        // Phase 1 Enhancement: Check if stage already completed (resume scenario)
+        if (isResume && workflowState && workflowState.completedStages.includes(stageName)) {
+            console.log(`[stage-skipped-already-complete] Stage: ${stageName} already completed (resume mode)`);
+
+            // Load previous output if available
+            if (workflowState.stageOutputs[stageName]) {
+                stageOutputs[stageName] = workflowState.stageOutputs[stageName];
+            } else {
+                stageOutputs[stageName] = {
+                    status: 'complete',
+                    startTime: new Date().toISOString(),
+                    endTime: new Date().toISOString(),
+                    duration: 0,
+                    attempts: 0,
+                    message: 'Completed in previous run (resumed)'
+                };
+            }
+
+            continue;
+        }
+
         // Check if all dependencies are met
-        const unmetDeps = stage.dependencies.filter(dep => 
+        const unmetDeps = stage.dependencies.filter(dep =>
             !stageOutputs[dep] || stageOutputs[dep].status !== 'complete'
         );
 
         if (unmetDeps.length > 0) {
             console.error(`[stage-skipped] Stage: ${stageName} skipped - unmet dependencies: ${unmetDeps.join(', ')}`);
-            
+
             stageOutputs[stageName] = {
                 status: 'skipped',
                 reason: 'Unmet dependencies',
@@ -887,9 +1029,18 @@ async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
             const result = await executeStage(stage, workflow, stageOutputs, context, spawner);
             stageOutputs[stageName] = result;
 
+            // Phase 1 Enhancement: Save stage completion to persistent state
+            if (persistence && workflowState) {
+                try {
+                    await persistence.updateStageCompletion(workflowState.workflowId, stageName, result);
+                } catch (error) {
+                    console.warn(`[persistence-warn] Could not save stage completion: ${error.message}`);
+                }
+            }
+
         } catch (error) {
             failedStage = stageName;
-            
+
             stageOutputs[stageName] = {
                 status: 'failed',
                 error: {
@@ -900,6 +1051,15 @@ async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
                 endTime: new Date().toISOString(),
                 duration: 0
             };
+
+            // Phase 1 Enhancement: Save stage failure to persistent state
+            if (persistence && workflowState) {
+                try {
+                    await persistence.updateStageFailure(workflowState.workflowId, stageName, error);
+                } catch (persistError) {
+                    console.warn(`[persistence-warn] Could not save stage failure: ${persistError.message}`);
+                }
+            }
 
             console.error(`[workflow-error] Stage failed: ${stageName}`);
 
@@ -997,12 +1157,40 @@ async function executeWorkflow(workflow, context = {}, agentSpawner = null) {
         });
     }
 
+    // Phase 1 Enhancement: Mark workflow as complete in persistent state
+    if (persistence && workflowState && success) {
+        try {
+            await persistence.markWorkflowCompleted(workflowState.workflowId);
+            console.log(`[persistence] Workflow marked as complete: ${workflowState.workflowId}`);
+        } catch (error) {
+            console.warn(`[persistence-warn] Could not mark workflow complete: ${error.message}`);
+        }
+    }
+
+    // Phase 1 Enhancement: Post-workflow cleanup and resource monitoring
+    if (resourceManager) {
+        try {
+            const postCleanupResult = await resourceManager.postWorkflowCleanup({
+                workflow: workflow.name,
+                success: success,
+                stagesCompleted: Object.values(stageOutputs).filter(s => s.status === 'complete').length
+            });
+
+            if (postCleanupResult && postCleanupResult.recommendations.length > 0) {
+                console.log(`[resource-recommendations]:`, postCleanupResult.recommendations);
+            }
+        } catch (error) {
+            console.warn(`[resource-warn] Post-workflow cleanup failed: ${error.message}`);
+        }
+    }
+
     console.log(`[${success ? 'workflow-complete' : 'workflow-failed'}] Workflow: ${workflow.name} in ${(totalDuration / 1000).toFixed(1)}s`);
     console.log(`[iteration-result] Status: ${iterationStatus}, Iteration: ${currentIteration}/${maxIterations}`);
 
     return {
         success,
         workflow: workflow.name,
+        workflowId: workflowState?.workflowId || null,  // Phase 1 Enhancement: Include workflow ID
         stages: stageOutputs,
         totalDuration,
         failedStage,
@@ -1086,19 +1274,55 @@ function checkCriticalGaps(stageOutput) {
 
 /**
  * Get workflow status (for resume/interruption)
+ * Phase 1 Enhancement: Now uses persistence module
  */
-function getWorkflowStatus(workflowName) {
-    // This would integrate with a persistent store
-    // For now, return placeholder
+async function getWorkflowStatus(workflowName) {
+    // Phase 1 Enhancement: Use persistence module if available
+    if (persistence) {
+        try {
+            // List all workflows and find matching one
+            const states = await persistence.listWorkflowStates();
+            const matchingState = states.find(s => s.workflowName === workflowName);
+
+            if (matchingState) {
+                // Get full status
+                return await persistence.getWorkflowStatus(matchingState.workflowId);
+            }
+
+            return null;
+        } catch (error) {
+            console.error(`[status-error] Could not get workflow status: ${error.message}`);
+            return null;
+        }
+    }
+
+    // Fallback: placeholder
     return null;
 }
 
 /**
  * Cancel workflow
+ * Phase 1 Enhancement: Now uses persistence module
  */
 async function cancelWorkflow(workflowName) {
-    // This would integrate with a persistent store and signal running stages
-    // For now, return placeholder
+    // Phase 1 Enhancement: Use persistence module if available
+    if (persistence) {
+        try {
+            const states = await persistence.listWorkflowStates();
+            const matchingState = states.find(s => s.workflowName === workflowName && s.status === 'running');
+
+            if (matchingState) {
+                return await persistence.cancelWorkflow(matchingState.workflowId);
+            }
+
+            return false;
+        } catch (error) {
+            console.error(`[cancel-error] Could not cancel workflow: ${error.message}`);
+            return false;
+        }
+    }
+
+    // Fallback: placeholder
     return false;
 }
 
@@ -1183,43 +1407,215 @@ if (require.main === module) {
                 console.error('\n❌ Example workflow failed:', error.message);
                 process.exit(1);
             });
+    } else if (args.length > 0 && args[0] === 'status') {
+        // Get workflow status
+        const workflowName = args[1];
+
+        if (!workflowName) {
+            console.error('Usage: node queue.js status <workflow-name>');
+            process.exit(1);
+        }
+
+        const status = await getWorkflowStatus(workflowName);
+
+        if (!status) {
+            console.log(`\n⚠️  No running workflow found with name: ${workflowName}\n`);
+        } else {
+            console.log(`\nWorkflow Status: ${workflowName}`);
+            console.log(`  ID: ${status.workflowId}`);
+            console.log(`  Status: ${status.status}`);
+            console.log(`  Started: ${status.startedAt}`);
+            console.log(`  Last Updated: ${status.lastUpdated}`);
+            console.log(`  Iteration: ${status.iteration}`);
+            console.log(`  Progress: ${status.progress.completedStages.length}/${status.progress.totalStages} stages (${status.progress.percent}%)`);
+
+            if (status.failedStage) {
+                console.log(`  Failed Stage: ${status.failedStage}`);
+            }
+
+            if (status.errorMessage) {
+                console.log(`  Error: ${status.errorMessage}`);
+            }
+
+            console.log();
+        }
+
+    } else if (args.length > 0 && args[0] === 'list') {
+        // List all workflow states
+        const states = await persistence.listWorkflowStates();
+
+        if (states.length === 0) {
+            console.log('\nNo workflow states found.\n');
+        } else {
+            console.log(`\nWorkflow States (${states.length}):\n`);
+            console.log('ID                               | Name              | Status    | Progress | Last Updated');
+            console.log('----------------------------------|-------------------|-----------|----------|------------------------');
+
+            states.forEach(state => {
+                console.log(
+                    `${state.workflowId.padEnd(32)} | ${state.workflowName.padEnd(17)} | ${state.status.padEnd(9)} | ${state.progress.completedStages}/${state.progress.totalStages} (${state.progress.percent}%) | ${state.lastUpdated}`
+                );
+            });
+
+            console.log();
+        }
+
+    } else if (args.length > 0 && args[0] === 'resume') {
+        // Resume workflow
+        const workflowId = args[1];
+        const workflowFile = args[2];
+
+        if (!workflowId) {
+            console.error('Usage: node queue.js resume <workflow-id> [workflow-file]');
+            console.error('');
+            console.error('Arguments:');
+            console.error('  workflow-id    - ID of workflow to resume (use "list" command to see IDs)');
+            console.error('  workflow-file  - (optional) Path to workflow JSON file for revalidation');
+            process.exit(1);
+        }
+
+        let workflow = null;
+        if (workflowFile) {
+            try {
+                workflow = JSON.parse(require('fs').readFileSync(workflowFile, 'utf-8'));
+            } catch (error) {
+                console.error(`❌ Error loading workflow file: ${error.message}`);
+                process.exit(1);
+            }
+        }
+
+        try {
+            // Resume workflow
+            const result = await executeWorkflow(workflow || {}, { workflowId, requireResume: true });
+
+            console.log('\n✅ Workflow resumed and completed' + (workflow ? '' : ' (workflow file not provided, using saved state)'));
+            console.log('Results:', JSON.stringify(result, null, 2));
+        } catch (error) {
+            console.error('\n❌ Workflow resume failed:', error.message);
+            process.exit(1);
+        }
+
+    } else if (args.length > 0 && args[0] === 'cancel') {
+        // Cancel workflow
+        const workflowName = args[1];
+
+        if (!workflowName) {
+            console.error('Usage: node queue.js cancel <workflow-name>');
+            process.exit(1);
+        }
+
+        const cancelled = await cancelWorkflow(workflowName);
+
+        if (cancelled) {
+            console.log(`\n✅ Workflow cancelled: ${workflowName}\n`);
+        } else {
+            console.log(`\n⚠️  Could not cancel workflow: ${workflowName}\n`);
+            console.log('Reason: No running workflow found with that name\n');
+        }
+
+    } else if (args.length > 0 && args[0] === 'cleanup') {
+        // Clean up old workflow states
+        const retentionDays = args[1] ? parseInt(args[1]) : 7;
+
+        if (isNaN(retentionDays) || retentionDays < 1) {
+            console.error('Usage: node queue.js cleanup [retention-days]');
+            console.error('  retention-days - Days to retain (default: 7)');
+            process.exit(1);
+        }
+
+        console.log(`\nCleaning up workflow states older than ${retentionDays} days...\n`);
+
+        const stats = await persistence.cleanupOldStates(retentionDays);
+
+        console.log(`\nCleanup complete:`);
+        console.log(`  Total states: ${stats.totalStates}`);
+        console.log(`  Deleted: ${stats.deletedStates}`);
+        console.log(`  Bytes freed: ${stats.bytesFreed > 0 ? (stats.bytesFreed / 1024 / 1024).toFixed(2) + ' MB' : '0 bytes'}\n`);
+
+        // Also cleanup old outputs
+        if (resourceManager) {
+            const outputStats = await resourceManager.cleanupOldOutputs('./example-workflow/outputs', retentionDays);
+
+            if (outputStats.filesDeleted > 0) {
+                console.log(`\nOutput files cleaned:`);
+                console.log(`  Files scanned: ${outputStats.filesScanned}`);
+                console.log(`  Files deleted: ${outputStats.filesDeleted}`);
+                console.log(`  Bytes freed: ${(outputStats.bytesFreed / 1024 / 1024).toFixed(2)} MB\n`);
+            }
+        }
+
+    } else if (args.length > 0 && args[0] === 'resource-report') {
+        // Get resource usage report
+        const report = resourceManager.getResourceReport();
+
+        console.log('\nResource Usage Report:');
+        console.log(`  Timestamp: ${report.timestamp}`);
+        console.log(`  Memory Heap Used: ${report.memory.heapUsed} (${report.memory.percentUsed}%)`);
+        console.log(`  Memory Heap Total: ${report.memory.heapTotal}`);
+        console.log(`  Memory External: ${report.memory.external}`);
+        console.log(`  Memory RSS: ${report.memory.rss}`);
+        console.log(`  Uptime: ${report.duration.uptimeFormatted}\n`);
+
     } else {
         console.log(`
-Sequential Agent Queue
-====================
+Sequential Agent Queue (Enhanced with Phase 1 Production Readiness)
+======================================================================
 
 Usage:
   const queue = require('skills/sequential-agent-queue/queue.js');
-  
+
   const workflow = {
       name: 'my-workflow',
       stages: [ ... ],
       stopOnError: true,
       retryOnFailure: 1
   };
-  
+
   // Run with default CLI-based spawner
   const result = await queue.executeWorkflow(workflow);
-  
+
   // Or run with custom spawner (e.g., sessions_spawn from main agent)
   const result = await queue.executeWorkflow(workflow, {}, customSpawner);
 
+  // Resume workflow (Phase 1 Enhancement)
+  const resultWithResume = await queue.executeWorkflow(
+      workflow,
+      { workflowId: 'existing-workflow-id' }
+  );
+
 Commands:
-  node queue.js validate <workflow-file>  # Validate workflow JSON file
-  node queue.js example                    # Run example workflow
+  node queue.js validate <workflow-file>      # Validate workflow JSON file
+  node queue.js example                       # Run example workflow
+  node queue.js status <workflow-name>        # Get workflow status (Phase 1)
+  node queue.js list                          # List all workflow states (Phase 1)
+  node queue.js resume <workflow-id> [file]   # Resume workflow (Phase 1)
+  node queue.js cancel <workflow-name>        # Cancel running workflow (Phase 1)
+  node queue.js cleanup [retention-days]      # Clean up old states/outputs (Phase 1)
+  node queue.js resource-report               # Resource usage report (Phase 1)
 
 Features:
   - Topological sort for dependency ordering
   - Sequential execution with context passing
-  - Retry logic per stage
+  - Retry logic per stage with enhanced error recovery (Phase 1)
   - Timeout handling
   - Checkpoint integration
   - Progress tracking
+  - Workflow persistence and resumption (Phase 1)
+  - Resource management (cleanup, monitoring) (Phase 1)
+  - Intelligent error classification and recovery (Phase 1)
 
 Architecture:
   - Supports both internal sessions_spawn and CLI-based spawning
   - Polls sessions for completion
   - Embeds governance protocols in all tasks
+  - Enhanced error recovery with retry strategies
+  - Persistent workflow state for interruption recovery
+  - Automatic resource cleanup and monitoring
+
+Phase 1 Enhancements (Production Readiness):
+  ✅ Enhanced error recovery with retry strategies
+  ✅ Resource management (cleanup, monitoring)
+  ✅ Workflow persistence and resumption
         `);
     }
 }

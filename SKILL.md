@@ -3,8 +3,17 @@
 Automated sequential execution of multi-stage agent workflows with dependency passing and progress tracking.
 
 **Architecture Updates:**
+- **v3.0 (2026-02-16):** Phase 1 Production Readiness - Enhanced error recovery, resource management, workflow persistence
 - **v2.0 (2026-02-16):** Production-ready enhancements with evidence validation, git commit enforcement (Fixes #1-#6)
 - **v1.0 (2026-02-16):** Removed Antfarm dependency, uses OpenClaw `agent` CLI directly, embeds governance protocols
+
+**Phase 1 Enhancements (Production Readiness):**
+
+3 new modules added for production-grade reliability:
+
+1. **error-handler.js** - Intelligent error classification and recovery strategies
+2. **resource-manager.js** - Automatic cleanup, monitoring, resource limits
+3. **persistence.js** - Workflow state persistence, pause/resume functionality
 
 ## What This Skill Does
 
@@ -16,6 +25,165 @@ The **Sequential Agent Queue** skill enables you to define complex, multi-stage 
 - **Handles failures** with configurable retries and error recovery
 - **Integrates with checkpoints** for resume capability after interruptions
 - **Enforces governance** by embedding mandatory protocols in all tasks
+
+## Phase 1 Production Readiness Enhancements (NEW v3.0)
+
+### 1. Enhanced Error Recovery (`error-handler.js`)
+
+**What it does:**
+- Classifies errors into types (timeout, resource exhaustion, invalid input, etc.)
+- Applies intelligent recovery strategies based on error type
+- Logs detailed error context for debugging
+- Provides actionable suggestions for error resolution
+
+**Error classification types:**
+- `TIMEOUT` - Extend timeout and retry
+- `RESOURCE_EXHAUSTED` - Cleanup and retry
+- `NETWORK_ERROR` - Exponential backoff
+- `INVALID_INPUT` - Halt (requires human intervention)
+- `AGENT_SPAWN_FAILED` - Try fallback spawner
+- `VALIDATION_FAILED` - Halt with detailed error
+- `ABANDONED_STAGE` - Halt (agent didn't produce output)
+
+**Example:**
+```javascript
+// Error automatically classified and recovered
+await executeWorkflow(workflow);
+// If timeout occurs: extends timeout by 50% and retries
+// If network error: applies exponential backoff with 30s max delay
+```
+
+### 2. Resource Management (`resource-manager.js`)
+
+**What it does:**
+- Automatic cleanup of old output files (>30 days by default)
+- Memory usage monitoring and reporting
+- Disk space validation before workflow execution
+- Workflow resource limits validation
+- Pre and post workflow cleanup hooks
+
+**Features:**
+- **Pre-workflow cleanup:** Validates resources, checks disk space, cleans old outputs
+- **Post-workflow cleanup:** Monitors memory usage, triggers cleanup if critical
+- **Resource validation:** Checks workflow doesn't exceed safe limits
+- **Resource reporting:** Detailed memory and uptime statistics
+
+**Example:**
+```javascript
+// Automatic resource management built-in
+await executeWorkflow(workflow);
+
+// View resource report
+const report = resourceManager.getResourceReport();
+console.log(report.memory.heapUsed);  // "512 MB"
+console.log(report.duration.uptimeFormatted);  // "1h 23m 45s"
+```
+
+**Configuration:**
+```javascript
+const workflow = {
+    name: 'my-workflow',
+    // ... other config
+    resourceLimits: {
+        maxStages: 50,              // Safety limit
+        maxDurationHours: 24,       // Prevent runaway workflows
+        maxMemoryMB: 1024           // 1GB limit
+    }
+};
+```
+
+### 3. Workflow Persistence & Resumption (`persistence.js`)
+
+**What it does:**
+- Saves workflow state after each stage completion
+- Enables workflow resumption after interruption
+- Provides workflow status querying
+- Supports workflow cancellation
+- Auto-cleanup of old workflow states (>7 days)
+
+**Key operations:**
+- `saveWorkflowState()` - Persist workflow progress
+- `loadWorkflowState()` - Load saved state
+- `resumeWorkflow()` - Resume interrupted workflow
+- `cancelWorkflow()` - Cancel running workflow
+- `getWorkflowStatus()` - Query workflow status
+- `listWorkflowStates()` - List all saved workflows
+
+**Example:**
+```javascript
+// Start workflow
+const result = await executeWorkflow({ name: 'my-workflow', ... });
+console.log(result.workflowId);  // "wf-1739751234-ab12cd34"
+
+// Workflow interrupted, now resume:
+const resumedResult = await executeWorkflow(
+    { name: 'my-workflow', ... },
+    { workflowId: 'wf-1739751234-ab12cd34' }
+);
+// Resumes from where it left off!
+
+// Check workflow status
+const status = await getWorkflowStatus('my-workflow');
+console.log(status.workflowId);
+console.log(status.progress);  // { completedStages: 5, totalStages: 9, percent: 55 }
+
+// List all workflows
+const states = await persistence.listWorkflowStates();
+states.forEach(state => console.log(state.workflowName, state.status));
+
+// Cancel running workflow
+await cancelWorkflow('my-workflow');
+```
+
+**CLI commands:**
+```bash
+# List all workflow states
+node queue.js list
+
+# Get workflow status
+node queue.js status my-workflow
+
+# Resume workflow
+node queue.js resume wf-1739751234-ab12cd34 workflow.json
+
+# Cancel workflow
+node queue.js cancel my-workflow
+
+# Cleanup old states (>7 days)
+node queue.js cleanup 7
+
+# Resource usage report
+node queue.js resource-report
+```
+
+### How Phase 1 Improves Production Readiness
+
+**Before Phase 1:**
+- ❌ Workflow interruption = total progress loss, restart from beginning
+- ❌ No intelligent error recovery, only simple retry
+- ❌ Old output files accumulate forever
+- ❌ No way to track workflow progress or status
+- ❌ Resource exhaustion = workflow crash
+
+**After Phase 1:**
+- ✅ Workflow interruption = resume from last stage completed
+- ✅ Intelligent error classification and recovery strategies
+- ✅ Automatic cleanup of old files and states
+- ✅ Real-time workflow status and progress tracking
+- ✅ Resource monitoring prevents exhaustion
+- ✅ Workflow can be paused/canceled gracefully
+
+### Integration with Existing Features
+
+All Phase 1 enhancements integrate seamlessly with existing features:
+
+- **Governance protocols:** Still embedded in all agent tasks
+- **Evidence validation:** Enhanced with detailed error logging
+- **Git commit enforcement:** Still commits .md files automatically
+- **Checkpoint integration:** Checkpoints now include resource info
+- **Iteration support:** Iteration state saved in persistence
+
+---
 
 ## Architecture
 
